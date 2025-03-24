@@ -20,3 +20,4 @@ tracer/obj-intel64/
 tags
 *.out
 libbf/
+*/__pycache__/
