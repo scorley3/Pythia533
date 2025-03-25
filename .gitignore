@@ -20,4 +20,4 @@ tracer/obj-intel64/
 tags
 *.out
 libbf/
-*/__pycache__/
+scripts/python_rollup/__pycache__/
