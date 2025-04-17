@@ -279,7 +279,7 @@ vector<int> Bingo_PPF::find_in_pht(uint64_t pc, uint64_t address) {
          bool do_pf = (perc_sum >= knob::ppf_perc_threshold_lo) ? 1 : 0;
          bool fill_l2 = (perc_sum >= knob::ppf_perc_threshold_hi) ? 1 : 0;
 
-         pattern[i] = fill_l2 ? BINGO_L2C_PREFETCH : do_pf ? BINGO_LLC_PREFETCH : 0; 
+         pattern[i] = fill_l2 ? FILL_L2 : do_pf ? FILL_LLC : 0; 
          
 
          // Recording Perc negatives (perceptron didn't prefetch)
@@ -288,8 +288,8 @@ vector<int> Bingo_PPF::find_in_pht(uint64_t pc, uint64_t address) {
 				// Because 'trueness' of a prefetch is decisded based on the feedback from L2C
 				// So even though LLC prefetches go through, they are treated as false wrt L2C in this case
             uint64_t pf_addr = address & ~(PAGE_SIZE - 1) + (i << LOG2_BLOCK_SIZE);
-            
-            filter->check(pf_addr, address, pc, BINGO_PERC_REJECT, train_delta + delta[set][way], last_sig, curr_sig, pf_conf, perc_sum, depth);
+         
+            pf_filter.check(pf_addr, address, pc, BINGO_PERC_REJECT, counts[1][i], counts[0][i], perc_sum);
 
              
 
@@ -615,9 +615,9 @@ void 	PERCEPTRON::perc_update(uint64_t base_addr, uint64_t ip, uint64_t ip_1, ui
 }
 
 ////////////////////////////////////////////////// PREFETCH FILTER start Prefetch_filter start////////////////////////////////
-bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip, FILTER_REQUEST filter_request, uint64_t avg_recency, uint64_t vote_count, bool direction, int32_t perc_sum) {
-      uint64_t cache_line = check_addr >> LOG2_BLOCK_SIZE,
-               hash = spp_ppf::get_hash(cache_line);
+bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip, FILTER_REQUEST filter_request, uint64_t recency, uint64_t votes, int32_t p_sum) {
+      uint64_t cache_line = check_addr,
+               hash = get_hash(cache_line);
    
    //MAIN FILTER
    uint64_t quotient = (hash >> REMAINDER_BIT) & ((1 << QUOTIENT_BIT) - 1),
@@ -627,22 +627,22 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
    uint64_t quotient_reject = (hash >> REMAINDER_BIT_REJ) & ((1 << QUOTIENT_BIT_REJ) - 1),
                remainder_reject = hash % (1 << REMAINDER_BIT_REJ);
 
-      SPP_DP (
-         cout << "[FILTER] check_addr: " << hex << check_addr << " check_cache_line: " << (check_addr >> LOG2_BLOCK_SIZE);
-      cout << " request type: " << filter_request;
-         cout << " hash: " << hash << dec << " quotient: " << quotient << " remainder: " << remainder << endl;
-      );
+      // SPP_DP (
+      //    cout << "[FILTER] check_addr: " << hex << check_addr << " check_cache_line: " << (check_addr >> LOG2_BLOCK_SIZE);
+      // cout << " request type: " << filter_request;
+      //    cout << " hash: " << hash << dec << " quotient: " << quotient << " remainder: " << remainder << endl;
+      // );
 
       switch (filter_request) {
       
-      case SPP_PERC_REJECT: // To see what would have been the prediction given perceptron has rejected the PF
+      case BINGO_PERC_REJECT: // To see what would have been the prediction given perceptron has rejected the PF
             if ((valid[quotient] || useful[quotient]) && remainder_tag[quotient] == remainder) { 
             // We want to check if the prefetch would have gone through had perc not rejected
             // So even in perc reject case, I'm checking in the accept filter for redundancy
-                  SPP_DP (
-                     cout << "[FILTER] " << __func__ << " line is already in the filter check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
-                     cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
-                  );
+                  // SPP_DP (
+                  //    cout << "[FILTER] " << __func__ << " line is already in the filter check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+                  //    cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
+                  // );
                   return false; // False return indicates "Do not prefetch"
             } else {
             valid_reject[quotient_reject] = 1;
@@ -651,30 +651,32 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
             // Logging perc features
             address_reject[quotient_reject] = base_addr;
             pc_reject[quotient_reject] = ip;
-            pc_1_reject[quotient_reject] = ghr->ip_1;
-            pc_2_reject[quotient_reject] = ghr->ip_2;
-            pc_3_reject[quotient_reject] = ghr->ip_3;
-            delta_reject[quotient_reject] = cur_delta;
-            perc_sum_reject[quotient_reject] = sum;
-            last_signature_reject[quotient_reject] = last_sig;
-            cur_signature_reject[quotient_reject] = curr_sig;
-            confidence_reject[quotient_reject] = conf;
-            la_depth_reject[quotient_reject] = depth;
+            pc_1_reject[quotient_reject] = hist->ip_1;
+            pc_2_reject[quotient_reject] = hist->ip_2;
+            pc_3_reject[quotient_reject] = hist->ip_3;
+            perc_sum_reject[quotient_reject] = p_sum;
+            avg_recency_reject[quotient_reject] = avg_recency;
+            vote_count_reject[quotient_reject] = vote_count;
+            // delta_reject[quotient_reject] = cur_delta;
+                // last_signature_reject[quotient_reject] = last_sig;
+            // cur_signature_reject[quotient_reject] = curr_sig;
+            // confidence_reject[quotient_reject] = conf;
+            // la_depth_reject[quotient_reject] = depth;
 
-            SPP_DP (
-                     cout << "[FILTER] " << __func__ << " PF rejected by perceptron. Set valid_reject for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
-                     cout << " quotient: " << quotient << " remainder_tag: " << remainder_tag_reject[quotient_reject] << endl; 
-               cout << " More Recorded Metadata: Addr: " << hex << address_reject[quotient_reject] << dec << " PC: " << pc_reject[quotient_reject] << " Delta: " << delta_reject[quotient_reject] << " Last Signature: " << last_signature_reject[quotient_reject] << " Current Signature: " << cur_signature_reject[quotient_reject] << " Confidence: " << confidence_reject[quotient_reject] << endl;
-                  );
+            // SPP_DP (
+            //          cout << "[FILTER] " << __func__ << " PF rejected by perceptron. Set valid_reject for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+            //          cout << " quotient: " << quotient << " remainder_tag: " << remainder_tag_reject[quotient_reject] << endl; 
+            //    cout << " More Recorded Metadata: Addr: " << hex << address_reject[quotient_reject] << dec << " PC: " << pc_reject[quotient_reject] << " Delta: " << delta_reject[quotient_reject] << " Last Signature: " << last_signature_reject[quotient_reject] << " Current Signature: " << cur_signature_reject[quotient_reject] << " Confidence: " << confidence_reject[quotient_reject] << endl;
+            //       );
          }
          break;
       
-      case SPP_L2C_PREFETCH:
+      case BINGO_L2C_PREFETCH:
             if ((valid[quotient] || useful[quotient]) && remainder_tag[quotient] == remainder) { 
-                  SPP_DP (
-                     cout << "[FILTER] " << __func__ << " line is already in the filter check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
-                     cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
-                  );
+                  // SPP_DP (
+                  //    cout << "[FILTER] " << __func__ << " line is already in the filter check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+                  //    cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
+                  // );
 
                   return false; // False return indicates "Do not prefetch"
             } else {
@@ -684,32 +686,36 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
                   remainder_tag[quotient] = remainder;
 
             // Logging perc features
-            delta[quotient] = cur_delta;
+            // delta[quotient] = cur_delta;
             pc[quotient] = ip;
-            pc_1[quotient] = ghr->ip_1;
-            pc_2[quotient] = ghr->ip_2;
-            pc_3[quotient] = ghr->ip_3;
-            last_signature[quotient] = last_sig; 
-            cur_signature[quotient] = curr_sig;
-            confidence[quotient] = conf;
+            pc_1[quotient] = hist->ip_1;
+            pc_2[quotient] = hist->ip_2;
+            pc_3[quotient] = hist->ip_3;
+            // last_signature[quotient] = last_sig; 
+            // cur_signature[quotient] = curr_sig;
+            // confidence[quotient] = conf;
             address[quotient] = base_addr; 
-            perc_sum[quotient] = sum;
-            la_depth[quotient] = depth;
+            perc_sum[quotient] = p_sum;
+            // la_depth[quotient] = depth;
+            // FIXME: added features
+            avg_recency[quotient] = recency;
+            vote_count[quotient] = votes;
             
-            SPP_DP (
-                     cout << "[FILTER] " << __func__ << " set valid for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
-                     cout << " quotient: " << quotient << " remainder_tag: " << remainder_tag[quotient] << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
-               cout << " More Recorded Metadata: Addr:" << hex << address[quotient] << dec << " PC: " << pc[quotient] << " Delta: " << delta[quotient] << " Last Signature: " << last_signature[quotient] << " Current Signature: " << cur_signature[quotient] << " Confidence: " << confidence[quotient] << endl;
-                  );
+                
+            // SPP_DP (
+            //          cout << "[FILTER] " << __func__ << " set valid for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+            //          cout << " quotient: " << quotient << " remainder_tag: " << remainder_tag[quotient] << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
+            //    cout << " More Recorded Metadata: Addr:" << hex << address[quotient] << dec << " PC: " << pc[quotient] << " Delta: " << delta[quotient] << " Last Signature: " << last_signature[quotient] << " Current Signature: " << cur_signature[quotient] << " Confidence: " << confidence[quotient] << endl;
+            //       );
             }
             break;
 
-         case SPP_LLC_PREFETCH:
+         case BINGO_LLC_PREFETCH:
             if ((valid[quotient] || useful[quotient]) && remainder_tag[quotient] == remainder) { 
-                  SPP_DP (
-                     cout << "[FILTER] " << __func__ << " line is already in the filter check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
-                     cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
-                  );
+                  // SPP_DP (
+                  //    cout << "[FILTER] " << __func__ << " line is already in the filter check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+                  //    cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
+                  // );
 
                   return false; // False return indicates "Do not prefetch"
             } else {
@@ -719,10 +725,10 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
                   // we can get this cache line immediately from the LLC (not from DRAM)
                   // To allow this fast prefetch from LLC, SPP does not set the valid bit for SPP_LLC_PREFETCH
             
-            SPP_DP (
-                     cout << "[FILTER] " << __func__ << " don't set valid for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
-                     cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
-                  );
+            // SPP_DP (
+            //          cout << "[FILTER] " << __func__ << " don't set valid for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+            //          cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
+            //       );
             }
             break;
 
@@ -730,34 +736,35 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
             if ((remainder_tag[quotient] == remainder) && (useful[quotient] == 0)) {
                   useful[quotient] = 1;
                   if (valid[quotient]) {
-               ghr->pf_useful++; // This cache line was prefetched by SPP and actually used in the program
+               hist->pf_useful++; // This cache line was prefetched by SPP and actually used in the program
             }
 
-                  SPP_DP (
-                     cout << "[FILTER] " << __func__ << " set useful for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
-                     cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient];
-                     cout << " ghr->pf_issued: " << ghr->pf_issued << " ghr->pf_useful: " << ghr->pf_useful << endl; 
-               if (valid[quotient])
-                  cout << " Calling Perceptron Update (INC) as L2C_DEMAND was useful" << endl;
-                  );
+               //    SPP_DP (
+               //       cout << "[FILTER] " << __func__ << " set useful for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+               //       cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient];
+               //       cout << " ghr->pf_issued: " << ghr->pf_issued << " ghr->pf_useful: " << ghr->pf_useful << endl; 
+               // if (valid[quotient])
+               //    cout << " Calling Perceptron Update (INC) as L2C_DEMAND was useful" << endl;
+               //    );
 
                   if (valid[quotient]) {
                // Prefetch leads to a demand hit
-               perc->perc_update(address[quotient], pc[quotient], pc_1[quotient], pc_2[quotient], pc_3[quotient], delta[quotient], last_signature[quotient], cur_signature[quotient], confidence[quotient], la_depth[quotient], 1, perc_sum[quotient]);
+               perc->perc_update(address[quotient], pc[quotient], pc_1[quotient], pc_2[quotient], pc_3[quotient], avg_recency[quotient], vote_count[quotient], 1, perc_sum[quotient]);
+               // void perc_update(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3, uint64_t avg_recency, uint64_t vote_count, bool direction, int32_t perc_sum);
             }
             }
          //If NOT Prefetched
          if (!(valid[quotient] && remainder_tag[quotient] == remainder)) {
             // AND If Rejected by Perc
             if (valid_reject[quotient_reject] && remainder_tag_reject[quotient_reject] == remainder_reject) {
-                        SPP_DP (
-                           cout << "[FILTER] " << __func__ << " not doing anything for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
-                           cout << " quotient: " << quotient << " valid_reject:" << valid_reject[quotient_reject];
-                           cout << " ghr->pf_issued: " << ghr->pf_issued << " ghr->pf_useful: " << ghr->pf_useful << endl; 
-                        cout << " Calling Perceptron Update (DEC) as a useful L2C_DEMAND was rejected and reseting valid_reject" << endl;
-                        );
+                        // SPP_DP (
+                        //    cout << "[FILTER] " << __func__ << " not doing anything for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+                        //    cout << " quotient: " << quotient << " valid_reject:" << valid_reject[quotient_reject];
+                        //    cout << " ghr->pf_issued: " << ghr->pf_issued << " ghr->pf_useful: " << ghr->pf_useful << endl; 
+                        // cout << " Calling Perceptron Update (DEC) as a useful L2C_DEMAND was rejected and reseting valid_reject" << endl;
+                        // );
                // Not prefetched but could have been a good idea to prefetch
-               perc->perc_update(address_reject[quotient_reject], pc_reject[quotient_reject], pc_1_reject[quotient_reject], pc_2_reject[quotient_reject], pc_3_reject[quotient_reject], delta_reject[quotient_reject], last_signature_reject[quotient_reject], cur_signature_reject[quotient_reject], confidence_reject[quotient_reject], la_depth_reject[quotient_reject], 0, perc_sum_reject[quotient_reject]);
+               perc->perc_update(address_reject[quotient_reject], pc_reject[quotient_reject], pc_1_reject[quotient_reject], pc_2_reject[quotient_reject], pc_3_reject[quotient_reject], avg_recency_reject[quotient_reject], vote_count_reject[quotient_reject], 0, perc_sum_reject[quotient_reject]);
                valid_reject[quotient_reject] = 0;
                remainder_tag_reject[quotient_reject] = 0;
             }
@@ -767,18 +774,18 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
          case L2C_EVICT:
             // Decrease global pf_useful counter when there is a useless prefetch (prefetched but not used)
             if (valid[quotient] && !useful[quotient]) {
-            if (ghr->pf_useful) 
-               ghr->pf_useful--;
+            if (hist->pf_useful) 
+               hist->pf_useful--;
             
-            SPP_DP (
-                     cout << "[FILTER] " << __func__ << " eviction for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
-                     cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
-               cout << " Calling Perceptron Update (DEC) as L2C_DEMAND was not useful" << endl;
-               cout << " Reseting valid_reject" << endl;
-               );
+            // SPP_DP (
+            //          cout << "[FILTER] " << __func__ << " eviction for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+            //          cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl; 
+            //    cout << " Calling Perceptron Update (DEC) as L2C_DEMAND was not useful" << endl;
+            //    cout << " Reseting valid_reject" << endl;
+            //    );
 
             // Prefetch leads to eviction
-            perc->perc_update(address[quotient], pc[quotient], pc_1[quotient], pc_2[quotient], pc_3[quotient], delta[quotient], last_signature[quotient], cur_signature[quotient], confidence[quotient], la_depth[quotient], 0, perc_sum[quotient]);
+            perc->perc_update(address[quotient], pc[quotient], pc_1[quotient], pc_2[quotient], pc_3[quotient], avg_recency[quotient], vote_count[quotient], 0, perc_sum[quotient]);
          }
             // Reset filter entry
             valid[quotient] = 0;

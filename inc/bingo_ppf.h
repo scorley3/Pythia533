@@ -392,7 +392,8 @@ class FilterTableData {
       uint64_t ip_0,
       ip_1,
       ip_2,
-      ip_3;
+      ip_3, 
+      pf_useful;
 
 
 
@@ -616,7 +617,7 @@ public:
 
         // "lower bits of the physical address of the demand access that triggers the prefetch"
         PERC_DEPTH[0] = 2048; //base_addr; Physical Address
-        PERC_DEPTH[1] = pht_ways; // Vote Count | Cache Line same as address for now FIXME:
+        PERC_DEPTH[1] = pht_ways; // Vote Count | address is Cache Line for now FIXME:
         PERC_DEPTH[2] = 4096; //page_addr; Page Address
         // FIXME: new:
         PERC_DEPTH[3] = 4096; // "PC+Address" 
@@ -677,7 +678,7 @@ public:
         avg_recency_reject[FILTER_SET],
         vote_count_reject[FILTER_SET];
     bool valid_reject[FILTER_SET_REJ]; // Entries which the perceptron rejected
-    int32_t delta_reject[FILTER_SET_REJ],
+    int32_t //delta_reject[FILTER_SET_REJ],
         perc_sum_reject[FILTER_SET_REJ];
     // uint32_t last_signature_reject[FILTER_SET_REJ],
     //     confidence_reject[FILTER_SET_REJ],
@@ -703,7 +704,30 @@ public:
         }
     }
 
-    bool check(uint64_t check_addr, uint64_t base_addr, uint64_t ip, FILTER_REQUEST filter_request, uint64_t avg_recency, uint64_t vote_count, bool direction, int32_t perc_sum);
+    bool check(uint64_t check_addr, uint64_t base_addr, uint64_t ip, FILTER_REQUEST filter_request, uint64_t recency, uint64_t votess, int32_t p_sum);
+
+
+private:
+uint64_t get_hash(uint64_t key)
+{
+// TODO: Find a good 64-bit hash function
+    // Robert Jenkins' 32 bit mix function
+    key += (key << 12);
+    key ^= (key >> 22);
+    key += (key << 4);
+    key ^= (key >> 9);
+    key += (key << 10);
+    key ^= (key >> 2);
+    key += (key << 7);
+    key ^= (key >> 12);
+
+    // Knuth's multiplicative method
+    key = (key >> 3) * 2654435761;
+
+    return key;
+}
+
+
 };
 
 
