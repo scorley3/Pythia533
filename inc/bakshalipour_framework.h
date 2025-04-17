@@ -262,6 +262,12 @@ public:
 
    void set_lru(uint64_t key) { *this->get_lru(key) = 0; }
 
+   // FIXME: added this
+   int get_num_sets() {return this->num_sets;}
+
+   uint64_t get_lru_by_idx(uint64_t index, uint64_t way) {return lru[index][way];
+   +}
+
 protected:
    /* @override */
    int select_victim(uint64_t index) {
