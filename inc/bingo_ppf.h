@@ -408,12 +408,19 @@ class FilterTableData {
    public:
       /* contains the prefetch fill level for each block of spatial region */
       vector<int> pattern;
+      // FIXME: added info for filter check
+      vector<int> recencies;
+      vector<int> votes;
+      vector<int> p_sums;
    };
    
    class PrefetchStreamer : public LRUSetAssociativeCache<PrefetchStreamerData> {
       typedef LRUSetAssociativeCache<PrefetchStreamerData> Super;
    
    public:
+      //FIXME: cross pointer for pf filter
+      PREFETCH_FILTER *pf_filter;
+
       PrefetchStreamer(int size, int pattern_len, int debug_level = 0, int num_ways = 16)
       : Super(size, num_ways, debug_level), pattern_len(pattern_len) {
          if (this->debug_level >= 1)
@@ -421,16 +428,16 @@ class FilterTableData {
          << ", debug_level=" << debug_level << ", num_ways=" << num_ways << ")" << dec << endl;
       }
    
-      void insert(uint64_t region_number, vector<int> pattern) {
+      void insert(uint64_t region_number, vector<int> pattern, vector<int> recencies, vector<int> votes, vector<int> p_sums) {
          if (this->debug_level >= 2)
          cerr << "PrefetchStreamer::insert(region_number=0x" << hex << region_number
          << ", pattern=" << pattern_to_string(pattern) << ")" << dec << endl;
          uint64_t key = this->build_key(region_number);
-         Super::insert(key, {pattern});
+         Super::insert(key, {pattern, recencies, votes, p_sums});
          Super::set_mru(key);
       }
-   
-      int prefetch(CACHE *cache, uint64_t block_address) {
+      //FIXME: added pc 
+      int prefetch(CACHE *cache, uint64_t block_address, uint64_t pc) {
          if (this->debug_level >= 2) {
             cerr << "PrefetchStreamer::prefetch(cache=" << cache->NAME << ", block_address=0x" << hex << block_address
             << ")" << dec << endl;
@@ -452,6 +459,11 @@ class FilterTableData {
          Super::set_mru(key);
          int pf_issued = 0;
          vector<int> &pattern = entry->data.pattern;
+         // FIXME: more stuff from entry
+         vector<int> &recencies = entry->data.recencies;
+         vector<int> &vote_counts = entry->data.votes;
+         vector<int> &p_sums = entry->data.p_sums;
+
          pattern[region_offset] = 0; /* accessed block will be automatically fetched if necessary (miss) */
          int pf_offset;
          /* prefetch blocks that are close to the recent access first (locality!) */
@@ -462,9 +474,14 @@ class FilterTableData {
                if (0 <= pf_offset && pf_offset < this->pattern_len && pattern[pf_offset] > 0) {
                   uint64_t pf_address = (region_number * this->pattern_len + pf_offset) << LOG2_BLOCK_SIZE;
                   if (cache->PQ.occupancy + cache->MSHR.occupancy < cache->MSHR.SIZE - 1 && cache->PQ.occupancy < cache->PQ.SIZE) {
-                     cache->prefetch_line(0, base_addr, pf_address, pattern[pf_offset], 0);
-                     pf_issued += 1;
-                     pattern[pf_offset] = 0;
+                     
+                     // FIXME: filter check
+                     FILTER_REQUEST bingo_fill = pattern[pf_offset] == FILL_L2 ? BINGO_L2C_PREFETCH : BINGO_LLC_PREFETCH;
+                     if (pf_filter->check(pf_address, base_addr, pc, bingo_fill, recencies[pf_offset], vote_counts[pf_offset], p_sums[pf_offset])) {
+                        cache->prefetch_line(0, base_addr, pf_address, pattern[pf_offset], 0);
+                        pf_issued += 1;
+                        pattern[pf_offset] = 0;   
+                     }
                   } else {
                      /* prefetching limit is reached */
                      return pf_issued;
@@ -481,6 +498,8 @@ class FilterTableData {
          vector<string> headers({"Region", "Pattern"});
          return Super::log(headers);
       }
+
+
    
    private:
       /* @override */
@@ -519,7 +538,7 @@ class FilterTableData {
       */
       void access(uint64_t block_number, uint64_t pc);
       void eviction(uint64_t block_number);
-      int prefetch(uint64_t block_number);
+      int prefetch(uint64_t block_number, uint64_t pc);
       void set_debug_level(int debug_level);
       void log();
    
@@ -539,7 +558,7 @@ class FilterTableData {
       * @return The appropriate prefetch level for all blocks based on PHT output or an empty vector
       *         if no blocks should be prefetched
       */
-      vector<int> find_in_pht(uint64_t pc, uint64_t address);
+      vector<vector<int>> find_in_pht(uint64_t pc, uint64_t address);
    
       void insert_in_pht(const AccumulationTable::Entry &entry);
    
@@ -565,8 +584,8 @@ class FilterTableData {
       int debug_level = 0;
       uint32_t pc_address_fill_level;
       // FIXME: PERCEPTRON initialization
-      PERCEPTRON PERC;
-      PREFETCH_FILTER pf_filter;
+      bingo_helper::PERCEPTRON PERC;
+      bingo_helper::PREFETCH_FILTER pf_filter;
       
 
       /* stats */
@@ -589,7 +608,7 @@ class FilterTableData {
       uint64_t voter_sqr_sum = 0;
    };
    
-// namespace bingo_ppf {
+namespace bingo_helper {
 
   // FIXME: PERCEPTRON CLASS
 class PERCEPTRON
@@ -710,7 +729,7 @@ public:
 private:
 uint64_t get_hash(uint64_t key)
 {
-// TODO: Find a good 64-bit hash function
+// TODO: Find a good 64-bit hash function FIXME: this is from the OG code
     // Robert Jenkins' 32 bit mix function
     key += (key << 12);
     key ^= (key >> 22);
@@ -729,7 +748,7 @@ uint64_t get_hash(uint64_t key)
 
 
 };
-
+}
 
 // }
 
