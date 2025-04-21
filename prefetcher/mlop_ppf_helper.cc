@@ -1,14 +1,11 @@
 #include <iostream>
+#include "mlop_ppf_helper.h"
 #include "mlop_ppf.h"
 #include "ppf_dev_helper.h"
 
-namespace mlop_ppf {
 
-namespace knob
-{
-    extern int32_t ppf_perc_threshold_hi;
-    extern int32_t ppf_perc_threshold_lo;
-}
+
+namespace mlop_ppf {
 
 uint64_t get_hash(uint64_t key)
 {
@@ -28,7 +25,7 @@ uint64_t get_hash(uint64_t key)
     return key;
 }
 
-bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip, FILTER_REQUEST filter_request, int cur_delta, uint32_t last_sig, uint32_t curr_sig, uint32_t conf, int32_t sum, uint32_t depth)
+bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip, FILTER_REQUEST filter_request, int32_t score, uint32_t bit_vec_prop)
 {
     uint64_t cache_line = check_addr >> LOG2_BLOCK_SIZE,
              hash = mlop_ppf::get_hash(cache_line);
@@ -68,12 +65,8 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
 				pc_1_reject[quotient_reject] = ghr->ip_1;
 				pc_2_reject[quotient_reject] = ghr->ip_2;
 				pc_3_reject[quotient_reject] = ghr->ip_3;
-				delta_reject[quotient_reject] = cur_delta;
-				perc_sum_reject[quotient_reject] = sum;
-				last_signature_reject[quotient_reject] = last_sig;
-				cur_signature_reject[quotient_reject] = curr_sig;
-				confidence_reject[quotient_reject] = conf;
-				la_depth_reject[quotient_reject] = depth;
+				scores_reject[quotient_reject] = score; 
+				bit_vec_prop_reject[quotient_reject] = bit_vec_prop;
 
 				SPP_DP (
                     cout << "[FILTER] " << __func__ << " PF rejected by perceptron. Set valid_reject for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
@@ -98,17 +91,13 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
                 remainder_tag[quotient] = remainder;
 
 				// Logging perc features
-				delta[quotient] = cur_delta;
 				pc[quotient] = ip;
 				pc_1[quotient] = ghr->ip_1;
 				pc_2[quotient] = ghr->ip_2;
 				pc_3[quotient] = ghr->ip_3;
-				last_signature[quotient] = last_sig; 
-				cur_signature[quotient] = curr_sig;
-				confidence[quotient] = conf;
+				scores[quotient] = score;
 				address[quotient] = base_addr; 
-				perc_sum[quotient] = sum;
-				la_depth[quotient] = depth;
+				bit_vec_props[quotient] = bit_vec_prop;
 				
 				SPP_DP (
                     cout << "[FILTER] " << __func__ << " set valid for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
@@ -157,7 +146,7 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
 
                 if (valid[quotient]) {
 					// Prefetch leads to a demand hit
-					perc->perc_update(address[quotient], pc[quotient], pc_1[quotient], pc_2[quotient], pc_3[quotient], delta[quotient], last_signature[quotient], cur_signature[quotient], confidence[quotient], la_depth[quotient], 1, perc_sum[quotient]);
+					perc->perc_update(address[quotient], pc[quotient], pc_1[quotient], pc_2[quotient], pc_3[quotient], scores[quotient], bit_vec_props[quotient], 1, perc_sum[quotient]);
 				}
             }
 			//If NOT Prefetched
@@ -171,7 +160,7 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
 			   		 	 cout << " Calling Perceptron Update (DEC) as a useful L2C_DEMAND was rejected and reseting valid_reject" << endl;
                		 );
 					// Not prefetched but could have been a good idea to prefetch
-					perc->perc_update(address_reject[quotient_reject], pc_reject[quotient_reject], pc_1_reject[quotient_reject], pc_2_reject[quotient_reject], pc_3_reject[quotient_reject], delta_reject[quotient_reject], last_signature_reject[quotient_reject], cur_signature_reject[quotient_reject], confidence_reject[quotient_reject], la_depth_reject[quotient_reject], 0, perc_sum_reject[quotient_reject]);
+					perc->perc_update(address_reject[quotient_reject], pc_reject[quotient_reject], pc_1_reject[quotient_reject], pc_2_reject[quotient_reject], pc_3_reject[quotient_reject], scores_reject[quotient_reject], bit_vec_prop_reject[quotient_reject], 0, perc_sum_reject[quotient_reject]);
 					valid_reject[quotient_reject] = 0;
 					remainder_tag_reject[quotient_reject] = 0;
 				}
@@ -192,7 +181,7 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
             	);
 
 				// Prefetch leads to eviction
-				perc->perc_update(address[quotient], pc[quotient], pc_1[quotient], pc_2[quotient], pc_3[quotient], delta[quotient], last_signature[quotient], cur_signature[quotient], confidence[quotient], la_depth[quotient], 0, perc_sum[quotient]);
+				perc->perc_update(address[quotient], pc[quotient], pc_1[quotient], pc_2[quotient], pc_3[quotient], scores[quotient], bit_vec_props[quotient], 0, perc_sum[quotient]);
 			}
             // Reset filter entry
             valid[quotient] = 0;
@@ -214,26 +203,25 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
     return true;
 }
 
-void PERCEPTRON::get_perc_index(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3, int32_t cur_delta, uint32_t last_sig, uint32_t curr_sig, uint32_t confidence, uint32_t depth, uint64_t perc_set[PERC_FEATURES])
+void PERCEPTRON::get_perc_index(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3, int32_t score, uint32_t bit_vec_prop, uint64_t perc_set[PERC_FEATURES]) {
 {
 	// Returns the imdexes for the perceptron tables
     uint64_t cache_line = base_addr >> LOG2_BLOCK_SIZE,
 			 page_addr  = base_addr >> LOG2_PAGE_SIZE;
 
-	int sig_delta = (cur_delta < 0) ? (((-1) * cur_delta) + (1 << (SIG_DELTA_BIT - 1))) : cur_delta;
+	int delta = 0; // fix this -- need to calculate something? idk what delta is 
+	//int sig_delta = (cur_delta < 0) ? (((-1) * cur_delta) + (1 << (SIG_DELTA_BIT - 1))) : cur_delta;
 	uint64_t  pre_hash[PERC_FEATURES];
 
 	pre_hash[0] = base_addr;
 	pre_hash[1] = cache_line;
 	pre_hash[2] = page_addr;
-	pre_hash[3] = confidence ^ page_addr;
-	pre_hash[4] = curr_sig ^ sig_delta;
-	pre_hash[5] = ip_1 ^ (ip_2>>1) ^ (ip_3>>2);
-	pre_hash[6] = ip ^ depth;
-	pre_hash[7] = ip ^ sig_delta;
-	pre_hash[8] = confidence;
+	pre_hash[3] = ip_1 ^ (ip_2>>1) ^ (ip_3>>2);
+	pre_hash[4] = ip ^ delta;
+	pre_hash[5] = score; 
+	pre_hash[6] = bit_vec_prop;
 
-	for (int i = 0; i < PERC_FEATURES; i++) {
+	for (int i = 0; i < PERC_FEATURES; i++) 
 		perc_set[i] = (pre_hash[i]) % PERC_DEPTH[i]; // Variable depths
 		SPP_DP (
 			cout << "  Perceptron Set Index#: " << i << " = " <<  perc_set[i];
@@ -241,22 +229,15 @@ void PERCEPTRON::get_perc_index(uint64_t base_addr, uint64_t ip, uint64_t ip_1, 
 	}
 	SPP_DP (
 		cout << endl;
-	);		
+	);	
 }
 
-int32_t	PERCEPTRON::perc_predict(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3, int32_t cur_delta, uint32_t last_sig, uint32_t curr_sig, uint32_t confidence, uint32_t depth)
+int32_t	PERCEPTRON::perc_predict(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3, int32_t score, uint32_t bit_vec_prop)
 {
-	SPP_DP (
-		int sig_delta = (cur_delta < 0) ? (((-1) * cur_delta) + (1 << (SIG_DELTA_BIT - 1))) : cur_delta;
-		cout << "[PERC_PRED] Current IP: " << ip << "  and  Memory Adress: " << hex << base_addr << endl;
-		cout << " Last Sig: " << last_sig << " Curr Sig: " << curr_sig << dec << endl;
-		cout << " Cur Delta: " << cur_delta << " Sign Delta: " << sig_delta << " Confidence: " << confidence<< endl;
-		cout << " ";
-	);
 
 	uint64_t perc_set[PERC_FEATURES];
 	// Get the indexes in perc_set[]
-	get_perc_index(base_addr, ip, ip_1, ip_2, ip_3, cur_delta, last_sig, curr_sig, confidence, depth, perc_set);
+	get_perc_index(base_addr, ip, ip_1, ip_2, ip_3, score, bit_vec_prop, perc_set);
 	
 	int32_t sum = 0;
 	for (int i = 0; i < PERC_FEATURES; i++) {
@@ -270,7 +251,7 @@ int32_t	PERCEPTRON::perc_predict(uint64_t base_addr, uint64_t ip, uint64_t ip_1,
 	return sum;
 }
 
-void 	PERCEPTRON::perc_update(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3, int32_t cur_delta, uint32_t last_sig, uint32_t curr_sig, uint32_t confidence, uint32_t depth, bool direction, int32_t perc_sum)
+void PERCEPTRON::perc_update(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3, int32_t score, uint32_t bit_vec_prop, bool direction, int32_t perc_sum)
 {
 	// SPP_DP (
 	// 	int sig_delta = (cur_delta < 0) ? (((-1) * cur_delta) + (1 << (SIG_DELTA_BIT - 1))) : cur_delta;
@@ -282,7 +263,7 @@ void 	PERCEPTRON::perc_update(uint64_t base_addr, uint64_t ip, uint64_t ip_1, ui
 
 	uint64_t perc_set[PERC_FEATURES];
 	// Get the perceptron indexes
-	get_perc_index(base_addr, ip, ip_1, ip_2, ip_3, cur_delta, last_sig, curr_sig, confidence, depth, perc_set);
+	get_perc_index(base_addr, ip, ip_1, ip_2, ip_3, score, bit_vec_prop, perc_set);
 	
 	int32_t sum = 0;
 	// Restore the sum that led to the prediction

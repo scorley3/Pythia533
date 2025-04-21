@@ -1,32 +1,26 @@
 #include <iostream>
 #include "champsim.h"
-#include "mlop_ppf_helper.cc"
+#include "mlop_ppf.h"
+#include "mlop_ppf_helper.h"
 
-namespace knob
-{
-	extern uint32_t mlop_pref_degree;
-	extern uint32_t mlop_num_updates;
-	extern float 	mlop_l1d_thresh;
-	extern float 	mlop_l2c_thresh;
-	extern float 	mlop_llc_thresh;
-	extern uint32_t	mlop_debug_level;
-}
 
-char state_char[] = {'I', 'A', 'P'};
-char getStateChar(MLOP_State state) {return state_char[(int)state];}
 
-string map_to_string(const vector<MLOP_State> &access_map, const vector<int> &prefetch_map) {
+
+char state_chars[] = {'I', 'A', 'P'};
+char getStateChars(MLOP_State state) {return state_chars[(int)state];}
+
+string map_to_strings(const vector<MLOP_State> &access_map, const vector<int> &prefetch_map) {
     ostringstream oss;
     for (unsigned i = 0; i < access_map.size(); i += 1)
         if (access_map[i] == MLOP_State::PREFTCH) {
             oss << prefetch_map[i];
         } else {
-            oss << state_char[access_map[i]];
+            oss << state_chars[access_map[i]];
         }
     return oss.str();
 }
 
-void MLOP::init_knobs()
+void MLOP_PPF::init_knobs()
 {
 	PF_DEGREE = knob::mlop_pref_degree;
 	NUM_UPDATES = knob::mlop_num_updates;
@@ -34,6 +28,8 @@ void MLOP::init_knobs()
 	L2C_THRESH = knob::mlop_l2c_thresh * NUM_UPDATES;
 	LLC_THRESH = knob::mlop_llc_thresh * NUM_UPDATES;
 	debug_level = knob::mlop_debug_level;
+	// ppf_perc_threshold_hi = knob::ppf_perc_threshold_hi;
+    // ppf_perc_threshold_lo = knob::ppf_perc_threshold_lo;
 
 	blocks_in_cache = parent->NUM_SET * parent->NUM_WAY;
 	blocks_in_zone = PAGE_SIZE/BLOCK_SIZE;
@@ -44,12 +40,12 @@ void MLOP::init_knobs()
 	NUM_OFFSETS = 2*blocks_in_zone - 1;
 }
 
-void MLOP::init_stats()
+void MLOP_PPF::init_stats()
 {
 
 }
 
-MLOP::MLOP(string type, CACHE *cache) : Prefetcher(type), parent(cache)
+MLOP_PPF::MLOP_PPF(string type, CACHE *cache) : Prefetcher(type), parent(cache)
 {
 	init_knobs();
 	init_stats();
@@ -61,12 +57,12 @@ MLOP::MLOP(string type, CACHE *cache) : Prefetcher(type), parent(cache)
 	offset_scores = vector<vector<int>>(PF_DEGREE, vector<int>(NUM_OFFSETS, 0));
 }
 
-MLOP::~MLOP()
+MLOP_PPF::~MLOP_PPF()
 {
 
 }
 
-void MLOP::print_config()
+void MLOP_PPF::print_config()
 {
 	cout << "mlop_pref_degree " << knob::mlop_pref_degree << endl
 		<< "mlop_num_updates " << knob::mlop_num_updates << endl
@@ -94,7 +90,7 @@ void MLOP::print_config()
  * Updates MLOP's state based on the most recent trigger access (LOAD miss/prefetch-hit).
  * @param block_number The block address of the most recent trigger access
  */
-void MLOP::access(uint64_t block_number) {
+void MLOP_PPF::access(uint64_t block_number) {
 	if (this->debug_level >= 2)
 		cout << "MLOP::access(block_number=0x" << hex << block_number << ")" << dec << endl;
 
@@ -116,7 +112,7 @@ void MLOP::access(uint64_t block_number) {
 		if (this->zone_cnt == TRACKED_ZONE_CNT) {
 			this->tracked_zone_number = zone_number;
 			this->tracking = true;
-			this->zone_life.push_back(string(this->blocks_in_zone, state_char[MLOP_State::INIT]));
+			this->zone_life.push_back(string(this->blocks_in_zone, state_chars[MLOP_State::INIT]));
 		}
 		/* ===== */
 		return;
@@ -249,7 +245,7 @@ void MLOP::access(uint64_t block_number) {
 /**
  * @param block_number The block address of the most recent LOAD access
  */
-void MLOP::prefetch(CACHE *cache, uint64_t block_number) {
+void MLOP_PPF::prefetch(CACHE *cache, uint64_t block_number) {
 	if (this->debug_level >= 2) {
 		cout << "MLOP::prefetch(cache=" << cache->NAME << "-" << cache->cpu << ", block_number=0x" << hex
 			<< block_number << dec << ")" << endl;
@@ -281,10 +277,28 @@ void MLOP::prefetch(CACHE *cache, uint64_t block_number) {
 				uint64_t pf_block_number = block_number + cur_pf_offset;
 				uint64_t base_addr = block_number << LOG2_BLOCK_SIZE;
 				uint64_t pf_addr = pf_block_number << LOG2_BLOCK_SIZE;
-				cache->prefetch_line(0, base_addr, pf_addr, this->pf_level[d], 0);
-				// assert(ok == 1);
-				this->mark(pf_block_number, MLOP_State::PREFTCH, this->pf_level[d]);
-				pf_issued += 1;
+				uint32_t score_idx = ORIGIN + cur_pf_offset;
+				uint32_t score = this->offset_scores[d][score_idx];
+
+				int set_bits = 0;
+				for (MLOP_State state : access_map) {
+					if (state != MLOP_State::INIT)
+						set_bits++;
+				}
+				int bit_vec_prop = (100 * set_bits) / access_map.size();
+				
+				int32_t perc_sum = PERC.perc_predict(base_addr, GHR.ip_0, GHR.ip_1, GHR.ip_2, GHR.ip_3, score, bit_vec_prop);
+
+				if (perc_sum >= knob::ppf_perc_threshold_hi) {
+					// Issue the prefetch
+					cache->prefetch_line(0, base_addr, pf_addr, this->pf_level[d], 0);
+					this->mark(pf_block_number, MLOP_State::PREFTCH, this->pf_level[d]);
+					pf_issued++;
+				
+				} else {
+					// Optional: mark the rejected prefetch for potential training later
+					FILTER.check(pf_addr, base_addr, GHR.ip_0, MLOP_PERC_REJECT, score, bit_vec_prop);
+				}
 			}
 		}
 	}
@@ -294,16 +308,16 @@ void MLOP::prefetch(CACHE *cache, uint64_t block_number) {
 	}
 }
 
-void MLOP::mark(uint64_t block_number, MLOP_State state, int fill_level) {
+void MLOP_PPF::mark(uint64_t block_number, MLOP_State state, int fill_level) {
 	this->access_map_table->set_state(block_number, state, fill_level);
 }
 
-void MLOP::set_debug_level(int debug_level) {
+void MLOP_PPF::set_debug_level(int debug_level) {
 	this->debug_level = debug_level;
 	this->access_map_table->set_debug_level(debug_level);
 }
 
-string MLOP::log_offset_scores() {
+string MLOP_PPF::log_offset_scores() {
 	Table table(1 + PF_DEGREE, this->offset_scores.size() + 1);
 	vector<string> headers = {"Offset"};
 	for (uint32_t d = 0; d < PF_DEGREE; d += 1) {
@@ -320,7 +334,7 @@ string MLOP::log_offset_scores() {
 	return table.to_string();
 }
 
-void MLOP::log() {
+void MLOP_PPF::log() {
 	cout << "Access Map Table:" << dec << endl;
 	cout << this->access_map_table->log();
 
@@ -330,13 +344,13 @@ void MLOP::log() {
 
 /*========== stats ==========*/
 
-void MLOP::track(uint64_t block_number) {
+void MLOP_PPF::track(uint64_t block_number) {
 	uint64_t zone_number = block_number / this->blocks_in_zone;
 	if (this->tracking && zone_number == this->tracked_zone_number) {
 		AccessMapTable::Entry *entry = this->access_map_table->find(zone_number);
 		if (!entry) {
 			this->tracking = false; /* end of zone lifetime, stop tracking */
-			this->zone_life.push_back(string(this->blocks_in_zone, state_char[MLOP_State::INIT]));
+			this->zone_life.push_back(string(this->blocks_in_zone, state_chars[MLOP_State::INIT]));
 			return;
 		}
 		const vector<MLOP_State> &access_map = entry->data.access_map;
@@ -347,7 +361,7 @@ void MLOP::track(uint64_t block_number) {
 	}
 }
 
-void MLOP::reset_stats() {
+void MLOP_PPF::reset_stats() {
 	this->tracking = false;
 	this->zone_cnt = 0;
 	this->zone_life.clear();
@@ -361,7 +375,7 @@ void MLOP::reset_stats() {
 	this->max_score_ri_sqr_sum = 0;
 }
 
-void MLOP::print_stats() {
+void MLOP_PPF::print_stats() {
 	cout << "[MLOP] History of tracked zone:" << endl;
 	for (auto &x : this->zone_life)
 		cout << x << endl;
@@ -386,13 +400,13 @@ void MLOP::print_stats() {
 	cout << endl;
 }
 
-void MLOP::dump_stats()
+void MLOP_PPF::dump_stats()
 {
 	print_stats();
 }
 
 /* Base-class virtual function */
-void MLOP::invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t cache_hit, uint8_t type, std::vector<uint64_t> &pref_addr)
+void MLOP_PPF::invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t cache_hit, uint8_t type, std::vector<uint64_t> &pref_addr)
 {
     if (type != LOAD)
         return;
@@ -426,11 +440,27 @@ void MLOP::invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t cache_hit, u
         cout << "=======================================" << dec << endl;
     }
 
+	uint64_t base_addr = address;
+    uint64_t curr_ip = pc;
+    uint32_t lookahead_conf = 100,
+             pf_q_head = 0, 
+             pf_q_tail = 0;
+    uint8_t  do_lookahead = 0;
+    int32_t  prev_delta = 0;
+
+    uint64_t train_addr  = address;
+    int32_t  train_delta = 0;
+
+    GHR.ip_3 = GHR.ip_2;
+    GHR.ip_2 = GHR.ip_1;
+    GHR.ip_1 = GHR.ip_0;
+    GHR.ip_0 = pc;
+
     /* stats */
     track(block_number);
 }
 
-void MLOP::register_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr)
+void MLOP_PPF::register_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr)
 {
 	if (parent->block[set][way].valid == 0)
 		return; /* no eviction */

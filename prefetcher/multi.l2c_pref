@@ -13,6 +13,7 @@
 #include "spp_dev2.h"
 #include "ppf_dev.h"
 #include "mlop.h"
+#include "mlop_ppf.h"
 #include "bingo.h"
 #include "stride.h"
 #include "ipcp_L2.h"
@@ -126,6 +127,12 @@ void CACHE::l2c_prefetcher_initialize()
 			cout << "adding L2C_PREFETCHER: AMPM" << endl;
 			AMPM *pref_ampm = new AMPM(knob::l2c_prefetcher_types[index]);
 			prefetchers.push_back(pref_ampm);
+		}
+		else if (!knob::l2c_prefetcher_types[index].compare("mlop_ppf"))
+		{
+			cout << "adding L2C_PREFETCHER: MLOP PPF" << endl;
+			MLOP_PPF *pref_mlop_ppf = new MLOP_PPF(knob::l2c_prefetcher_types[index], this);
+			prefetchers.push_back(pref_mlop_ppf);
 		}
 		else
 		{
