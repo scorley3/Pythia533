@@ -203,7 +203,7 @@ bool PREFETCH_FILTER::check(uint64_t check_addr, uint64_t base_addr, uint64_t ip
     return true;
 }
 
-void PERCEPTRON::get_perc_index(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3, int32_t score, uint32_t bit_vec_prop, uint64_t perc_set[PERC_FEATURES]) {
+void PERCEPTRON::get_perc_index(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3, int32_t score, uint32_t bit_vec_prop, uint64_t perc_set[PERC_FEATURES_MLOP]) {
 {
 	// Returns the imdexes for the perceptron tables
     uint64_t cache_line = base_addr >> LOG2_BLOCK_SIZE,
@@ -211,21 +211,18 @@ void PERCEPTRON::get_perc_index(uint64_t base_addr, uint64_t ip, uint64_t ip_1, 
 
 	int delta = 0; // fix this -- need to calculate something? idk what delta is 
 	//int sig_delta = (cur_delta < 0) ? (((-1) * cur_delta) + (1 << (SIG_DELTA_BIT - 1))) : cur_delta;
-	uint64_t  pre_hash[PERC_FEATURES];
+	uint64_t  pre_hash[PERC_FEATURES_MLOP];
 
 	pre_hash[0] = base_addr;
 	pre_hash[1] = cache_line;
 	pre_hash[2] = page_addr;
 	pre_hash[3] = ip_1 ^ (ip_2>>1) ^ (ip_3>>2);
-	pre_hash[4] = ip ^ delta;
-	pre_hash[5] = score; 
-	pre_hash[6] = bit_vec_prop;
+	pre_hash[4] = score; 
+	pre_hash[5] = bit_vec_prop;
 
-	for (int i = 0; i < PERC_FEATURES; i++) 
+	for (int i = 0; i < PERC_FEATURES_MLOP; i++) {
 		perc_set[i] = (pre_hash[i]) % PERC_DEPTH[i]; // Variable depths
-		SPP_DP (
-			cout << "  Perceptron Set Index#: " << i << " = " <<  perc_set[i];
-		);
+	}
 	}
 	SPP_DP (
 		cout << endl;
@@ -235,12 +232,12 @@ void PERCEPTRON::get_perc_index(uint64_t base_addr, uint64_t ip, uint64_t ip_1, 
 int32_t	PERCEPTRON::perc_predict(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3, int32_t score, uint32_t bit_vec_prop)
 {
 
-	uint64_t perc_set[PERC_FEATURES];
+	uint64_t perc_set[PERC_FEATURES_MLOP];
 	// Get the indexes in perc_set[]
 	get_perc_index(base_addr, ip, ip_1, ip_2, ip_3, score, bit_vec_prop, perc_set);
 	
 	int32_t sum = 0;
-	for (int i = 0; i < PERC_FEATURES; i++) {
+	for (int i = 0; i < PERC_FEATURES_MLOP; i++) {
 		sum += perc_weights[perc_set[i]][i];	
 		// Calculate Sum
 	}
@@ -261,7 +258,7 @@ void PERCEPTRON::perc_update(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uin
 	// 	cout << " ";
 	// );
 
-	uint64_t perc_set[PERC_FEATURES];
+	uint64_t perc_set[PERC_FEATURES_MLOP];
 	// Get the perceptron indexes
 	get_perc_index(base_addr, ip, ip_1, ip_2, ip_3, score, bit_vec_prop, perc_set);
 	
@@ -271,7 +268,7 @@ void PERCEPTRON::perc_update(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uin
 	
 	if (!direction) { // direction = 1 means the sum was in the correct direction, 0 means it was in the wrong direction
 		// Prediction wrong
-		for (int i = 0; i < PERC_FEATURES; i++) {
+		for (int i = 0; i < PERC_FEATURES_MLOP; i++) {
 			if (sum >= knob::ppf_perc_threshold_hi) {
 				// Prediction was to prefectch -- so decrement counters
 				if (perc_weights[perc_set[i]][i] > -1*(PERC_COUNTER_MAX+1) )
@@ -291,7 +288,7 @@ void PERCEPTRON::perc_update(uint64_t base_addr, uint64_t ip, uint64_t ip_1, uin
 	}
 	if (direction && sum > NEG_UPDT_THRESHOLD && sum < POS_UPDT_THRESHOLD) {
 		// Prediction correct but sum not 'saturated' enough
-		for (int i = 0; i < PERC_FEATURES; i++) {
+		for (int i = 0; i < PERC_FEATURES_MLOP; i++) {
 			if (sum >= knob::ppf_perc_threshold_hi) {
 				// Prediction was to prefetch -- so increment counters
 				if (perc_weights[perc_set[i]][i] < PERC_COUNTER_MAX)

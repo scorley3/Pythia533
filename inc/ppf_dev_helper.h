@@ -71,7 +71,7 @@ namespace spp_ppf {
 
 // Perceptron paramaters
 #define PERC_ENTRIES 4096 //Upto 12-bit addressing in hashed perceptron
-#define PERC_FEATURES 9 //Keep increasing based on new features
+#define PERC_FEATURES 9 
 #define PERC_COUNTER_MAX 15 //-16 to +15: 5 bits counter 
 // #define PERC_THRESHOLD_HI  -5
 // #define PERC_THRESHOLD_LO  -15

@@ -3,22 +3,18 @@
 #include "mlop_ppf.h"
 #include "mlop_ppf_helper.h"
 
+// char getStateChar(MLOP_State state) {return state_char[(int)state];}
 
-
-
-char state_chars[] = {'I', 'A', 'P'};
-char getStateChars(MLOP_State state) {return state_chars[(int)state];}
-
-string map_to_strings(const vector<MLOP_State> &access_map, const vector<int> &prefetch_map) {
-    ostringstream oss;
-    for (unsigned i = 0; i < access_map.size(); i += 1)
-        if (access_map[i] == MLOP_State::PREFTCH) {
-            oss << prefetch_map[i];
-        } else {
-            oss << state_chars[access_map[i]];
-        }
-    return oss.str();
-}
+// string map_to_string(const vector<MLOP_State> &access_map, const vector<int> &prefetch_map) {
+//     ostringstream oss;
+//     for (unsigned i = 0; i < access_map.size(); i += 1)
+//         if (access_map[i] == MLOP_State::PREFTCH) {
+//             oss << prefetch_map[i];
+//         } else {
+//             oss << state_char[access_map[i]];
+//         }
+//     return oss.str();
+// }
 
 void MLOP_PPF::init_knobs()
 {
@@ -49,7 +45,10 @@ MLOP_PPF::MLOP_PPF(string type, CACHE *cache) : Prefetcher(type), parent(cache)
 {
 	init_knobs();
 	init_stats();
-
+	
+	FILTER.ghr = &GHR;
+    FILTER.perc = &PERC;
+	
 	/* init data structures */
 	access_map_table = new AccessMapTable(amt_size, blocks_in_zone, PF_DEGREE - 1, debug_level);
 	pf_offset = vector<vector<int>>(PF_DEGREE, vector<int>());
@@ -112,7 +111,7 @@ void MLOP_PPF::access(uint64_t block_number) {
 		if (this->zone_cnt == TRACKED_ZONE_CNT) {
 			this->tracked_zone_number = zone_number;
 			this->tracking = true;
-			this->zone_life.push_back(string(this->blocks_in_zone, state_chars[MLOP_State::INIT]));
+			this->zone_life.push_back(string(this->blocks_in_zone, state_char[MLOP_State::INIT]));
 		}
 		/* ===== */
 		return;
@@ -350,7 +349,7 @@ void MLOP_PPF::track(uint64_t block_number) {
 		AccessMapTable::Entry *entry = this->access_map_table->find(zone_number);
 		if (!entry) {
 			this->tracking = false; /* end of zone lifetime, stop tracking */
-			this->zone_life.push_back(string(this->blocks_in_zone, state_chars[MLOP_State::INIT]));
+			this->zone_life.push_back(string(this->blocks_in_zone, state_char[MLOP_State::INIT]));
 			return;
 		}
 		const vector<MLOP_State> &access_map = entry->data.access_map;
