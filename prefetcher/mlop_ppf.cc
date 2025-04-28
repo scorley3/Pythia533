@@ -293,9 +293,24 @@ void MLOP_PPF::prefetch(CACHE *cache, uint64_t block_number) {
 					cache->prefetch_line(0, base_addr, pf_addr, this->pf_level[d], 0);
 					this->mark(pf_block_number, MLOP_State::PREFTCH, this->pf_level[d]);
 					pf_issued++;
-				
-				} else {
-					// Optional: mark the rejected prefetch for potential training later
+				}
+				// if (perc_sum >= knob::ppf_perc_threshold_lo) {
+				// 	if (perc_sum >= knob::ppf_perc_threshold_hi) {
+				// 		// Issue the prefetch to L2
+				// 		cache->prefetch_line(0, base_addr, pf_addr, FILL_L2, 0);
+				// 		this->mark(pf_block_number, MLOP_State::PREFTCH, FILL_L2);
+				// 		pf_issued++;
+				// 		FILTER.check(pf_addr, base_addr, GHR.ip_0, MLOP_L2C_PREFETCH, score, bit_vec_prop);
+				// 	}
+				// 	else {
+				// 		// Issue the prefetch to LLC
+				// 		cache->prefetch_line(0, base_addr, pf_addr, FILL_LLC, 0);
+				// 		this->mark(pf_block_number, MLOP_State::PREFTCH, FILL_LLC);
+				// 		pf_issued++;
+				// 		FILTER.check(pf_addr, base_addr, GHR.ip_0, MLOP_LLC_PREFETCH, score, bit_vec_prop);
+				// 	}
+					
+				else {
 					FILTER.check(pf_addr, base_addr, GHR.ip_0, MLOP_PERC_REJECT, score, bit_vec_prop);
 				}
 			}
@@ -426,6 +441,8 @@ void MLOP_PPF::invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t cache_hi
     if (cache_hit == 0 || prefetch_hit)
         trigger_access = true;
 
+	FILTER.check(block_number, 0, 0, L2C_DEMAND, 0, 0); 
+
     if (trigger_access)
         /* update MLOP with most recent trigger access */
         access(block_number);
@@ -463,6 +480,8 @@ void MLOP_PPF::register_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t 
 {
 	if (parent->block[set][way].valid == 0)
 		return; /* no eviction */
+
+	FILTER.check(evicted_addr >> LOG2_BLOCK_SIZE, 0, 0, L2C_EVICT, 0, 0); 
 
 	uint64_t evicted_block_number = evicted_addr >> LOG2_BLOCK_SIZE;
 	mark(evicted_block_number, MLOP_State::INIT);
